@@ -1,18 +1,11 @@
 #include "mainwindow.h"
 #include "ui_mainwindow.h"
 
-// #include <QDebug>
-
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , ui(new Ui::MainWindow)
 {
     ui->setupUi(this);
-
-    // connect(ui->helloButton,
-    //         &QPushButton::clicked,
-    //         this,
-    //         &MainWindow::sayHello);
 
     connect(ui->applyButton,
             &QPushButton::clicked,
@@ -25,25 +18,24 @@ MainWindow::~MainWindow()
     delete ui;
 }
 
-// void MainWindow::sayHello()
-// {
-//     QString name = ui->nameEdit->text();
-//     ui->messageLabel->setText("Hello " + name);
-// }
-
 void MainWindow::applyData()
 {
-    // QString title = ui->titleLabel->text();
-    QString id = ui->idEdit->text();
-    QString lat = ui->latEdit->text();
-    QString lon = ui->longEdit->text();
-    QString comment = ui->commentEdit->text();
-    // QString status = ui->statusLabel->text();
+    MyData data;
+
+    data.id = ui->idEdit->text().toUInt();
+    data.latitude = ui->latEdit->text().toFloat();
+    data.longitude = ui->longEdit->text().toFloat();
+    data.comment = ui->commentEdit->text();
+
+    data.isValid = true;
+
+    ui->validEditLabel->setText("Yes");
 
     ui->statusEditLabel->setText(
-        "ID: " + id +
-        " | Lat: " + lat +
-        " | Long: " + lon +
-        " | Comment: " + comment
+        "ID: " + QString::number(data.id) +
+        " | Lat: " + QString::number(data.latitude) +
+        " | Long: " + QString::number(data.longitude) +
+        " | Comment: " + data.comment +
+        " | Status: " + QString(data.isValid ? "Yes" : "No")
         );
 }

@@ -8,6 +8,7 @@ struct MyData
     float latitude;
     float longitude;
     QString comment;
+    bool isValid;
 };
 
 

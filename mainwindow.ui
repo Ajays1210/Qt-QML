@@ -142,7 +142,7 @@
     <property name="geometry">
      <rect>
       <x>130</x>
-      <y>500</y>
+      <y>470</y>
       <width>621</width>
       <height>20</height>
      </rect>
@@ -155,13 +155,39 @@
     <property name="geometry">
      <rect>
       <x>80</x>
-      <y>500</y>
+      <y>470</y>
       <width>63</width>
       <height>20</height>
      </rect>
     </property>
     <property name="text">
      <string>Status:</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="validLabel">
+    <property name="geometry">
+     <rect>
+      <x>80</x>
+      <y>510</y>
+      <width>63</width>
+      <height>20</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Valid:</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="validEditLabel">
+    <property name="geometry">
+     <rect>
+      <x>120</x>
+      <y>510</y>
+      <width>63</width>
+      <height>20</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Pending...</string>
     </property>
    </widget>
   </widget>

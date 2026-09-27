@@ -1,0 +1,11 @@
+build/ 
+*/build/ 
+bin/ 
+*/bin/ 
+*.user 
+*.user.* 
+*.exe 
+*.obj 
+*.o 
+.qtc_clangd/ 
+.qtcreator/

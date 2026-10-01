@@ -1,38 +1,40 @@
 #include "tcplistener.h"
-
-#include <cstring>
+#include <cstring>   // memcpy
 
 TcpListener::TcpListener(QObject *parent)
     : QObject(parent)
 {
 }
 
+// Runs inside the TCP thread. The server is created here (not in the
+// constructor) so that it belongs to this thread.
 void TcpListener::start()
 {
     m_server = new QTcpServer(this);
 
+    // Fires whenever a client connects.
     connect(m_server, &QTcpServer::newConnection,
             this, &TcpListener::onNewConnection);
 
     if (!m_server->listen(QHostAddress::AnyIPv4, 4001)) {
-        emit logMessage("Could not listen on TCP port 4001: " + m_server->errorString());
+        emit logMessage("Could not listen on TCP 4001: " + m_server->errorString());
         return;
     }
-
-    emit logMessage("Server listening on TCP port 4001");
+    emit logMessage("Listening on TCP port 4001");
 }
 
+// Closes all client sockets and the server.
 void TcpListener::stop()
 {
-    for (QTcpSocket *socket : m_clients) {
-        if (socket) {
-            socket->disconnectFromHost();
-            socket->deleteLater();
-        }
-    }
-
-    m_clients.clear();
+    // Take the sockets out of the hash FIRST, then disconnect. This way the
+    // 'disconnected' handler can't modify the container while we loop.
+    const QList<QTcpSocket*> sockets = m_buffers.keys();
     m_buffers.clear();
+
+    for (QTcpSocket *s : sockets) {
+        s->disconnectFromHost();
+        s->deleteLater();
+    }
 
     if (m_server) {
         m_server->close();
@@ -41,20 +43,21 @@ void TcpListener::stop()
     }
 }
 
+// Called by QTcpServer::newConnection.
 void TcpListener::onNewConnection()
 {
     while (m_server->hasPendingConnections()) {
         QTcpSocket *socket = m_server->nextPendingConnection();
+        m_buffers.insert(socket, QByteArray());   // empty buffer for this client
 
-        m_clients.append(socket);
-        m_buffers.insert(socket, QByteArray());
-
+        // New bytes arrived: append to this client's buffer, then try to parse.
         connect(socket, &QTcpSocket::readyRead, this, [this, socket]() {
-            processSocket(socket);
+            m_buffers[socket].append(socket->readAll());
+            processBuffer(socket);
         });
 
+        // Client left: forget its buffer and free the socket.
         connect(socket, &QTcpSocket::disconnected, this, [this, socket]() {
-            m_clients.removeAll(socket);
             m_buffers.remove(socket);
             socket->deleteLater();
         });
@@ -63,152 +66,88 @@ void TcpListener::onNewConnection()
     }
 }
 
-void TcpListener::processSocket(QTcpSocket *socket)
-{
-    if (!socket)
-        return;
-
-    m_buffers[socket].append(socket->readAll());
-    processBuffer(socket);
-}
-
+// Pulls complete command structs out of the client's buffer, one by one.
+// The first byte of every command is cmdID, which tells us the struct size.
 void TcpListener::processBuffer(QTcpSocket *socket)
 {
     QByteArray &buffer = m_buffers[socket];
 
+    // Small helper: turn a response struct into bytes and emit it.
+    // This goes to the UDP thread -> UdpBroadcaster::broadcast().
+    auto send = [this](const auto &resp) {
+        emit response(QByteArray(reinterpret_cast<const char*>(&resp), sizeof(resp)));
+    };
+
     while (!buffer.isEmpty()) {
-        unsigned char cmdId = static_cast<unsigned char>(buffer.at(0));
+        const unsigned char cmdId = static_cast<unsigned char>(buffer.at(0));
 
-        int requiredSize = 0;
-
-        if (cmdId == Protocol::CMD_ADD)
-            requiredSize = sizeof(Protocol::AddDataCmd);
-        else if (cmdId == Protocol::CMD_UPDATE)
-            requiredSize = sizeof(Protocol::UpdateDataCmd);
-        else if (cmdId == Protocol::CMD_DELETE)
-            requiredSize = sizeof(Protocol::DeleteDataCmd);
-        else {
-            emit logMessage("Unknown command ID");
+        // 1) Find out how many bytes this command needs.
+        int size = 0;
+        switch (cmdId) {
+        case Protocol::CMD_ADD:    size = sizeof(Protocol::AddDataCmd);    break;
+        case Protocol::CMD_UPDATE: size = sizeof(Protocol::UpdateDataCmd); break;
+        case Protocol::CMD_DELETE: size = sizeof(Protocol::DeleteDataCmd); break;
+        default:
+            emit logMessage("Unknown command ID, buffer cleared");
             buffer.clear();
             return;
         }
 
-        if (buffer.size() < requiredSize)
+        // 2) Not all bytes arrived yet -> wait for the next readyRead.
+        if (buffer.size() < size)
             return;
 
-        QByteArray packet = buffer.left(requiredSize);
-        buffer.remove(0, requiredSize);
+        // 3) Cut exactly one command out of the buffer.
+        const QByteArray packet = buffer.left(size);
+        buffer.remove(0, size);
 
-        if (cmdId == Protocol::CMD_ADD) {
+        // 4) Handle it.
+        if (cmdId == Protocol::CMD_ADD || cmdId == Protocol::CMD_UPDATE) {
             Protocol::AddDataCmd cmd{};
             std::memcpy(&cmd, packet.constData(), sizeof(cmd));
 
-            Protocol::AddDataResp response{};
-            response.respID = Protocol::RESP_ADD;
-            response.UniqueID = cmd.UniqueID;
-            response.lat = cmd.lat;
-            response.longi = cmd.longi;
-            std::memcpy(response.comment, cmd.comment, sizeof(response.comment));
+            // Response echoes the same data, plus Ack.
+            Protocol::AddDataResp resp{};
+            resp.respID = (cmdId == Protocol::CMD_ADD) ? Protocol::RESP_ADD
+                                                       : Protocol::RESP_UPDATE;
+            resp.UniqueID = cmd.UniqueID;
+            resp.lat = cmd.lat;
+            resp.longi = cmd.longi;
+            std::memcpy(resp.comment, cmd.comment, sizeof(resp.comment));
 
-            if (addRecord(cmd)) {
-                response.Ack = Protocol::ACK_SUCCESS;
-                emit logMessage(QString("ADD success: ID=%1").arg(cmd.UniqueID));
+            const bool exists = m_records.contains(cmd.UniqueID);
+            // ADD fails if ID already exists; UPDATE fails if it does NOT exist.
+            const bool ok = (cmdId == Protocol::CMD_ADD) ? !exists : exists;
+
+            if (ok) {
+                m_records[cmd.UniqueID] = cmd;   // insert new, or overwrite existing
+                resp.Ack = Protocol::ACK_SUCCESS;
             } else {
-                response.Ack = Protocol::ACK_FAIL;
-                emit logMessage(QString("ADD failed: ID=%1 already exists").arg(cmd.UniqueID));
+                resp.Ack = Protocol::ACK_FAIL;
             }
 
-            emit addResponse(response);
+            emit logMessage(QString("%1 ID=%2 -> %3")
+                                .arg(cmdId == Protocol::CMD_ADD ? "ADD" : "UPDATE")
+                                .arg(cmd.UniqueID)
+                                .arg(ok ? "success" : "fail"));
+            send(resp);
         }
-        else if (cmdId == Protocol::CMD_UPDATE) {
-            Protocol::UpdateDataCmd cmd{};
-            std::memcpy(&cmd, packet.constData(), sizeof(cmd));
-
-            Protocol::UpdateDataResp response{};
-            response.respID = Protocol::RESP_UPDATE;
-            response.UniqueID = cmd.UniqueID;
-            response.lat = cmd.lat;
-            response.longi = cmd.longi;
-            std::memcpy(response.comment, cmd.comment, sizeof(response.comment));
-
-            if (updateRecord(cmd)) {
-                response.Ack = Protocol::ACK_SUCCESS;
-                emit logMessage(QString("UPDATE success: ID=%1").arg(cmd.UniqueID));
-            } else {
-                response.Ack = Protocol::ACK_FAIL;
-                emit logMessage(QString("UPDATE failed: ID=%1 not found").arg(cmd.UniqueID));
-            }
-
-            emit updateResponse(response);
-        }
-        else if (cmdId == Protocol::CMD_DELETE) {
+        else {   // CMD_DELETE
             Protocol::DeleteDataCmd cmd{};
             std::memcpy(&cmd, packet.constData(), sizeof(cmd));
 
-            Protocol::DeleteDataResp response{};
-            response.respID = Protocol::RESP_DELETE;
-            response.UniqueID = cmd.UniqueID;
+            Protocol::DeleteDataResp resp{};
+            resp.respID = Protocol::RESP_DELETE;
+            resp.UniqueID = cmd.UniqueID;
 
-            if (deleteRecord(cmd.UniqueID)) {
-                response.Ack = Protocol::ACK_SUCCESS;
-                emit logMessage(QString("DELETE success: ID=%1").arg(cmd.UniqueID));
-            } else {
-                response.Ack = Protocol::ACK_FAIL;
-                emit logMessage(QString("DELETE failed: ID=%1 not found").arg(cmd.UniqueID));
-            }
+            // remove() returns how many items it removed (0 = ID not found).
+            const bool ok = m_records.remove(cmd.UniqueID) > 0;
+            resp.Ack = ok ? Protocol::ACK_SUCCESS : Protocol::ACK_FAIL;
 
-            emit deleteResponse(response);
+            emit logMessage(QString("DELETE ID=%1 -> %2")
+                                .arg(cmd.UniqueID)
+                                .arg(ok ? "success" : "fail"));
+            send(resp);
         }
     }
-}
-
-TcpListener::Record *TcpListener::findRecord(unsigned int uniqueId)
-{
-    for (Record &record : m_records) {
-        if (record.uniqueId == uniqueId)
-            return &record;
-    }
-
-    return nullptr;
-}
-
-bool TcpListener::addRecord(const Protocol::AddDataCmd &cmd)
-{
-    if (findRecord(cmd.UniqueID))
-        return false;
-
-    Record record;
-    record.uniqueId = cmd.UniqueID;
-    record.lat = cmd.lat;
-    record.longi = cmd.longi;
-    record.comment = QString::fromUtf8(cmd.comment);
-
-    m_records.append(record);
-    return true;
-}
-
-bool TcpListener::updateRecord(const Protocol::UpdateDataCmd &cmd)
-{
-    Record *record = findRecord(cmd.UniqueID);
-
-    if (!record)
-        return false;
-
-    record->lat = cmd.lat;
-    record->longi = cmd.longi;
-    record->comment = QString::fromUtf8(cmd.comment);
-
-    return true;
-}
-
-bool TcpListener::deleteRecord(unsigned int uniqueId)
-{
-    for (int i = 0; i < m_records.size(); ++i) {
-        if (m_records[i].uniqueId == uniqueId) {
-            m_records.removeAt(i);
-            return true;
-        }
-    }
-
-    return false;
 }

@@ -2,6 +2,11 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
+// Silences the editor warning about "itemModel" / "controller". These names are
+// created in main.cpp with setContextProperty, so the editor cannot see them
+// while you type, but they do exist at runtime.
+// qmllint disable unqualified
+
 ApplicationWindow {
   id: window
 
@@ -10,6 +15,7 @@ ApplicationWindow {
   visible: true
   title: "Location List"
 
+  // Row number the user clicked in the list. -1 means nothing is selected.
   property int selectedIndex: -1
 
   ColumnLayout {
@@ -17,6 +23,7 @@ ApplicationWindow {
     anchors.margins: 10
     spacing: 10
 
+    // The list. "itemModel" is the C++ Model class, set in main.cpp.
     ListView {
       id: listView
 
@@ -26,15 +33,14 @@ ApplicationWindow {
       clip: true
       model: itemModel
 
+      // One row per item. uniqueId, lat, longi, comment and index come from
+      // the role names defined in Model::roleNames().
       delegate: ItemDelegate {
         width: listView.width
-        highlighted: ListView.isCurrentItem
-        text: "ID " + uniqueId + "  (" + Number(lat).toFixed(4) + ", " + Number(longi).toFixed(4) + ")\n" + comment
+        highlighted: index === window.selectedIndex
+        text: "ID " + uniqueId + "  (" + lat.toFixed(4) + ", " + longi.toFixed(4) + ")\n" + comment
 
-        onClicked: {
-          listView.currentIndex = index;
-          window.selectedIndex = index;
-        }
+        onClicked: window.selectedIndex = index
       }
     }
 
@@ -42,20 +48,15 @@ ApplicationWindow {
       Layout.fillWidth: true
       spacing: 10
 
+      // ADD: open an empty form.
       Button {
         text: "Add"
         Layout.fillWidth: true
 
-        onClicked: {
-          formPopup.isUpdateMode = false;
-          formPopup.uniqueIdField.text = "";
-          formPopup.latField.text = "";
-          formPopup.longiField.text = "";
-          formPopup.commentField.text = "";
-          formPopup.open();
-        }
+        onClicked: formPopup.openForm(false, "", "", "", "")
       }
 
+      // UPDATE: open the form filled with the selected row.
       Button {
         text: "Update"
         Layout.fillWidth: true
@@ -63,15 +64,13 @@ ApplicationWindow {
 
         onClicked: {
           var item = itemModel.get(window.selectedIndex);
-          formPopup.isUpdateMode = true;
-          formPopup.uniqueIdField.text = String(item.uniqueId);
-          formPopup.latField.text = String(item.lat);
-          formPopup.longiField.text = String(item.longi);
-          formPopup.commentField.text = item.comment;
-          formPopup.open();
+          formPopup.openForm(true, item.uniqueId, item.lat.toFixed(6),
+                             item.longi.toFixed(6), item.comment);
         }
       }
 
+      // DELETE: send the delete command. The row is removed later, only when
+      // the server's UDP response arrives with Ack = success.
       Button {
         text: "Delete"
         Layout.fillWidth: true
@@ -81,12 +80,12 @@ ApplicationWindow {
           var item = itemModel.get(window.selectedIndex);
           controller.sendDelete(item.uniqueId);
           window.selectedIndex = -1;
-          listView.currentIndex = -1;
         }
       }
     }
   }
 
+  // The form window used for both Add and Update.
   Popup {
     id: formPopup
 
@@ -95,12 +94,18 @@ ApplicationWindow {
     anchors.centerIn: parent
     width: 300
 
+    // false = Add, true = Update. Changes the title and locks the ID field.
     property bool isUpdateMode: false
 
-    property alias uniqueIdField: idField
-    property alias latField: latitudeField
-    property alias longiField: longitudeField
-    property alias commentField: commentField
+    // Called by the Add and Update buttons: fills the fields, then shows the form.
+    function openForm(update, id, lat, longi, comment) {
+      isUpdateMode = update;
+      idField.text = String(id);
+      latitudeField.text = String(lat);
+      longitudeField.text = String(longi);
+      commentField.text = comment;
+      open();
+    }
 
     ColumnLayout {
       width: parent.width
@@ -111,67 +116,57 @@ ApplicationWindow {
         font.bold: true
       }
 
-      Label {
-        text: "Unique ID"
-      }
+      Label { text: "Unique ID" }
       TextField {
         id: idField
         Layout.fillWidth: true
-        enabled: !formPopup.isUpdateMode
-        validator: IntValidator {
-          bottom: 0
-        }
+        enabled: !formPopup.isUpdateMode   // the ID cannot change in Update
+        validator: IntValidator { bottom: 0 }
       }
 
-      Label {
-        text: "Latitude"
-      }
+      Label { text: "Latitude" }
       TextField {
         id: latitudeField
         Layout.fillWidth: true
         validator: DoubleValidator {}
       }
 
-      Label {
-        text: "Longitude"
-      }
+      Label { text: "Longitude" }
       TextField {
         id: longitudeField
         Layout.fillWidth: true
         validator: DoubleValidator {}
       }
 
-      Label {
-        text: "Comment"
-      }
+      Label { text: "Comment" }
       TextField {
         id: commentField
         Layout.fillWidth: true
-        maximumLength: 49
+        maximumLength: 49   // struct field is char[50], 1 byte is kept for '\0'
       }
 
       RowLayout {
         Layout.fillWidth: true
         spacing: 8
 
+        // APPLY: send the command over TCP. The list changes later, when the
+        // server answers on UDP.
         Button {
           text: "Apply"
           Layout.fillWidth: true
-          enabled: idField.text.length > 0
+          enabled: idField.acceptableInput
+                   && latitudeField.acceptableInput
+                   && longitudeField.acceptableInput
 
           onClicked: {
             var id = parseInt(idField.text);
             var lat = parseFloat(latitudeField.text);
             var longi = parseFloat(longitudeField.text);
 
-            if (isNaN(id) || isNaN(lat) || isNaN(longi))
-              return;
-
-            if (formPopup.isUpdateMode) {
+            if (formPopup.isUpdateMode)
               controller.sendUpdate(id, lat, longi, commentField.text);
-            } else {
+            else
               controller.sendAdd(id, lat, longi, commentField.text);
-            }
 
             formPopup.close();
           }

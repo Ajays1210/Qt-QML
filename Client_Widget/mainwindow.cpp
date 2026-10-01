@@ -1,10 +1,8 @@
 #include "mainwindow.h"
 
 #include <QDialog>
-#include <QDoubleSpinBox>
 #include <QFormLayout>
 #include <QHBoxLayout>
-#include <QInputDialog>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
@@ -12,6 +10,7 @@
 #include <QPushButton>
 #include <QVBoxLayout>
 #include <QWidget>
+#include <cstring>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -19,6 +18,7 @@ MainWindow::MainWindow(QWidget *parent)
     setWindowTitle("QT TCP/UDP Client");
     resize(650, 450);
 
+    // ---- Build the screen: title, list, three buttons, status line ----
     auto *central = new QWidget(this);
     setCentralWidget(central);
 
@@ -32,37 +32,47 @@ MainWindow::MainWindow(QWidget *parent)
 
     auto *buttonLayout = new QHBoxLayout;
 
-    m_addButton = new QPushButton("Add");
-    m_updateButton = new QPushButton("Update");
-    m_deleteButton = new QPushButton("Delete");
+    auto *addButton = new QPushButton("Add");
+    auto *updateButton = new QPushButton("Update");
+    auto *deleteButton = new QPushButton("Delete");
 
-    buttonLayout->addWidget(m_addButton);
-    buttonLayout->addWidget(m_updateButton);
-    buttonLayout->addWidget(m_deleteButton);
+    buttonLayout->addWidget(addButton);
+    buttonLayout->addWidget(updateButton);
+    buttonLayout->addWidget(deleteButton);
 
     mainLayout->addLayout(buttonLayout);
 
     m_statusLabel = new QLabel("Starting network...");
     mainLayout->addWidget(m_statusLabel);
 
-    connect(m_addButton, &QPushButton::clicked,
-            this, &MainWindow::onAddClicked);
+    // ---- Button clicks ----
+    // Add and Update just open the form (false = Add, true = Update).
+    connect(addButton, &QPushButton::clicked,
+            this, [this]() { openForm(false); });
 
-    connect(m_updateButton, &QPushButton::clicked,
-            this, &MainWindow::onUpdateClicked);
+    connect(updateButton, &QPushButton::clicked,
+            this, [this]() { openForm(true); });
 
-    connect(m_deleteButton, &QPushButton::clicked,
+    connect(deleteButton, &QPushButton::clicked,
             this, &MainWindow::onDeleteClicked);
 
+    // ---- Network thread ----
+    // The Network object is created WITHOUT a parent (an object with a parent
+    // cannot be moved to another thread), then moved to its own thread.
     m_network = new Network;
     m_network->moveToThread(&m_networkThread);
 
+    // When the thread starts, Network::start() runs inside it
+    // (creates the sockets there).
     connect(&m_networkThread, &QThread::started,
             m_network, &Network::start);
 
+    // Delete the Network object safely when its thread finishes.
     connect(&m_networkThread, &QThread::finished,
             m_network, &QObject::deleteLater);
 
+    // Network (network thread) -> MainWindow (main thread).
+    // The threads differ, so Qt automatically queues these signals.
     connect(m_network, &Network::addResponse,
             this, &MainWindow::onAddResponse);
 
@@ -78,32 +88,18 @@ MainWindow::MainWindow(QWidget *parent)
     m_networkThread.start();
 }
 
+// Runs when the window is closed. Stops the network thread cleanly.
 MainWindow::~MainWindow()
 {
-    if (m_networkThread.isRunning()) {
-        QMetaObject::invokeMethod(m_network, "stop", Qt::BlockingQueuedConnection);
-        m_networkThread.quit();
-        m_networkThread.wait();
-    }
+    m_networkThread.quit();   // end the thread's event loop
+    m_networkThread.wait();   // block until the thread has fully finished
+    // When the thread finishes, the 'finished' signal (connected in the
+    // constructor) deletes the Network object, and its sockets close with it.
 }
 
-void MainWindow::onAddClicked()
-{
-    openForm(false);
-}
-
-void MainWindow::onUpdateClicked()
-{
-    int row = selectedRow();
-
-    if (row < 0) {
-        QMessageBox::warning(this, "Update", "Select an item first.");
-        return;
-    }
-
-    openForm(true);
-}
-
+// Delete button: ask for confirmation, then send the delete command.
+// The row is NOT removed here. It is removed in onDeleteResponse, only if
+// the server answers with Ack = success.
 void MainWindow::onDeleteClicked()
 {
     int row = selectedRow();
@@ -113,27 +109,40 @@ void MainWindow::onDeleteClicked()
         return;
     }
 
-    const Record record = m_records[row];
+    // Copy the ID now: while the question box is open, a response could
+    // arrive and rebuild the list.
+    const unsigned int uniqueId = m_records[row].uniqueId;
 
     const auto result = QMessageBox::question(
         this,
         "Delete",
-        QString("Delete Unique ID %1?").arg(record.uniqueId));
+        QString("Delete Unique ID %1?").arg(uniqueId));
 
     if (result != QMessageBox::Yes)
         return;
 
     m_statusLabel->setText("Sending delete request...");
 
+    // Run sendDelete() in the NETWORK thread (m_network lives there).
+    // Queued = this call returns at once and the GUI never waits for the network.
     QMetaObject::invokeMethod(
         m_network,
-        "sendDelete",
-        Qt::QueuedConnection,
-        Q_ARG(unsigned int, record.uniqueId));
+        [this, uniqueId]() { m_network->sendDelete(uniqueId); },
+        Qt::QueuedConnection);
 }
 
+// Shows the Add/Update form. If the user presses Apply, the command is sent to
+// the server. The list is NOT changed here, only when the response arrives.
 void MainWindow::openForm(bool updateMode)
 {
+    // Update needs a selected row to edit.
+    const int row = selectedRow();
+
+    if (updateMode && row < 0) {
+        QMessageBox::warning(this, "Update", "Select an item first.");
+        return;
+    }
+
     QDialog dialog(this);
     dialog.setWindowTitle(updateMode ? "Update Data" : "Add Data");
     dialog.resize(420, 260);
@@ -149,11 +158,10 @@ void MainWindow::openForm(bool updateMode)
     uniqueIdEdit->setPlaceholderText("Example: 1001");
     latEdit->setPlaceholderText("Example: 12.9716");
     longEdit->setPlaceholderText("Example: 77.5946");
-    commentEdit->setMaxLength(49);
+    commentEdit->setMaxLength(49);   // struct field is char[50], 1 byte kept for '\0'
 
-    int row = selectedRow();
-
-    if (updateMode && row >= 0) {
+    // Update mode: fill the fields from the selected row, and lock the ID.
+    if (updateMode) {
         const Record &record = m_records[row];
 
         uniqueIdEdit->setText(QString::number(record.uniqueId));
@@ -184,9 +192,11 @@ void MainWindow::openForm(bool updateMode)
     connect(cancelButton, &QPushButton::clicked, &dialog, &QDialog::reject);
     connect(applyButton, &QPushButton::clicked, &dialog, &QDialog::accept);
 
+    // exec() shows the form and waits here until it is closed.
     if (dialog.exec() != QDialog::Accepted)
         return;
 
+    // Convert the text to numbers. The 'ok' flags say if the conversion worked.
     bool idOk = false;
     bool latOk = false;
     bool longOk = false;
@@ -204,40 +214,27 @@ void MainWindow::openForm(bool updateMode)
         return;
     }
 
-    if (!updateMode) {
-        for (const Record &record : m_records) {
-            if (record.uniqueId == uniqueId) {
-                QMessageBox::warning(
-                    this, "Duplicate ID",
-                    "That Unique ID is already present in the client list.");
-                return;
-            }
-        }
-    }
-
     m_statusLabel->setText(updateMode ? "Sending update request..." : "Sending add request...");
 
+    // Run sendAdd()/sendUpdate() in the NETWORK thread (queued, GUI never waits).
     if (updateMode) {
         QMetaObject::invokeMethod(
             m_network,
-            "sendUpdate",
-            Qt::QueuedConnection,
-            Q_ARG(unsigned int, uniqueId),
-            Q_ARG(float, lat),
-            Q_ARG(float, longi),
-            Q_ARG(QString, comment));
+            [this, uniqueId, lat, longi, comment]() {
+                m_network->sendUpdate(uniqueId, lat, longi, comment);
+            },
+            Qt::QueuedConnection);
     } else {
         QMetaObject::invokeMethod(
             m_network,
-            "sendAdd",
-            Qt::QueuedConnection,
-            Q_ARG(unsigned int, uniqueId),
-            Q_ARG(float, lat),
-            Q_ARG(float, longi),
-            Q_ARG(QString, comment));
+            [this, uniqueId, lat, longi, comment]() {
+                m_network->sendAdd(uniqueId, lat, longi, comment);
+            },
+            Qt::QueuedConnection);
     }
 }
 
+// Row number of the selected list item, or -1 if nothing is selected.
 int MainWindow::selectedRow() const
 {
     if (!m_list->currentItem())
@@ -246,6 +243,7 @@ int MainWindow::selectedRow() const
     return m_list->row(m_list->currentItem());
 }
 
+// Clears the list widget and fills it again from m_records.
 void MainWindow::refreshList()
 {
     m_list->clear();
@@ -260,10 +258,37 @@ void MainWindow::refreshList()
     }
 }
 
-void MainWindow::clearForm()
+// Used by both onAddResponse and onUpdateResponse (the structs are identical).
+// If the ID is already in the list, that row is replaced. Otherwise a new row
+// is added.
+void MainWindow::storeRecord(const Protocol::AddDataResp &response)
 {
+    Record record;
+    record.uniqueId = response.UniqueID;
+    record.lat = response.lat;
+    record.longi = response.longi;
+
+    // Read the text up to the first '\0', but never past the 50 bytes.
+    record.comment = QString::fromUtf8(
+        response.comment,
+        static_cast<int>(strnlen(response.comment, sizeof(response.comment))));
+
+    bool found = false;
+    for (Record &existing : m_records) {
+        if (existing.uniqueId == record.uniqueId) {
+            existing = record;
+            found = true;
+            break;
+        }
+    }
+
+    if (!found)
+        m_records.append(record);
+
+    refreshList();
 }
 
+// UDP response to an Add. Only if Ack is success is the item put in the list.
 void MainWindow::onAddResponse(Protocol::AddDataResp response)
 {
     if (response.Ack != Protocol::ACK_SUCCESS) {
@@ -272,18 +297,12 @@ void MainWindow::onAddResponse(Protocol::AddDataResp response)
         return;
     }
 
-    Record record;
-    record.uniqueId = response.UniqueID;
-    record.lat = response.lat;
-    record.longi = response.longi;
-    record.comment = QString::fromUtf8(response.comment);
-
-    m_records.append(record);
-    refreshList();
+    storeRecord(response);
 
     m_statusLabel->setText(QString("ADD successful. ID %1").arg(response.UniqueID));
 }
 
+// UDP response to an Update. On success the existing row is replaced.
 void MainWindow::onUpdateResponse(Protocol::UpdateDataResp response)
 {
     if (response.Ack != Protocol::ACK_SUCCESS) {
@@ -292,20 +311,12 @@ void MainWindow::onUpdateResponse(Protocol::UpdateDataResp response)
         return;
     }
 
-    for (Record &record : m_records) {
-        if (record.uniqueId == response.UniqueID) {
-            record.lat = response.lat;
-            record.longi = response.longi;
-            record.comment = QString::fromUtf8(response.comment);
-            break;
-        }
-    }
-
-    refreshList();
+    storeRecord(response);
 
     m_statusLabel->setText(QString("UPDATE successful. ID %1").arg(response.UniqueID));
 }
 
+// UDP response to a Delete. On success the row is removed.
 void MainWindow::onDeleteResponse(Protocol::DeleteDataResp response)
 {
     if (response.Ack != Protocol::ACK_SUCCESS) {
@@ -326,6 +337,7 @@ void MainWindow::onDeleteResponse(Protocol::DeleteDataResp response)
     m_statusLabel->setText(QString("DELETE successful. ID %1").arg(response.UniqueID));
 }
 
+// Text from Network (connected / failed / bound ...), shown in the status line.
 void MainWindow::onStatusMessage(const QString &message)
 {
     m_statusLabel->setText(message);

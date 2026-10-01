@@ -1,0 +1,124 @@
+#include "tcpsender.h"
+
+#include <QDebug>
+#include <cstring>
+
+#include "protocol.h"
+
+// Server is running locally on TCP port 4001.
+static const QString SERVER_ADDRESS =
+    QStringLiteral("127.0.0.1");
+
+TcpSender::TcpSender(QObject *parent)
+    : QObject(parent),
+      m_socket(new QTcpSocket(this))
+{
+}
+
+void TcpSender::start()
+{
+    qDebug() << "TCP sender thread ready.";
+}
+
+void TcpSender::stop()
+{
+    if (m_socket->state() != QAbstractSocket::UnconnectedState)
+        m_socket->disconnectFromHost();
+}
+
+bool TcpSender::ensureConnected()
+{
+    if (m_socket->state() == QAbstractSocket::ConnectedState)
+        return true;
+
+    // Make sure an old connection is closed.
+    if (m_socket->state() != QAbstractSocket::UnconnectedState)
+        m_socket->disconnectFromHost();
+
+    m_socket->connectToHost(SERVER_ADDRESS, 4001);
+
+    if (!m_socket->waitForConnected(1000))
+    {
+        qDebug() << "Cannot connect to server:"
+                 << m_socket->errorString();
+        return false;
+    }
+
+    return true;
+}
+
+void TcpSender::sendAdd(int uniqueID, double lat,
+                        double longitude,
+                        const QString &comment)
+{
+    if (!ensureConnected())
+        return;
+
+    AddDataCmd cmd{};
+
+    cmd.cmdID = Protocol::CMD_ADD;
+    cmd.UniqueID = static_cast<quint32>(uniqueID);
+    cmd.lat = static_cast<float>(lat);
+    cmd.longitude = static_cast<float>(longitude);
+
+    QByteArray text = comment.toUtf8();
+
+    std::strncpy(cmd.comment,
+                 text.constData(),
+                 sizeof(cmd.comment) - 1);
+
+    cmd.comment[sizeof(cmd.comment) - 1] = '\0';
+
+    // Send the fixed-size binary command over TCP.
+    m_socket->write(
+        reinterpret_cast<const char *>(&cmd),
+        sizeof(cmd));
+
+    m_socket->flush();
+}
+
+void TcpSender::sendUpdate(int uniqueID, double lat,
+                           double longitude,
+                           const QString &comment)
+{
+    if (!ensureConnected())
+        return;
+
+    AddDataCmd cmd{};
+
+    cmd.cmdID = Protocol::CMD_UPDATE;
+    cmd.UniqueID = static_cast<quint32>(uniqueID);
+    cmd.lat = static_cast<float>(lat);
+    cmd.longitude = static_cast<float>(longitude);
+
+    QByteArray text = comment.toUtf8();
+
+    std::strncpy(cmd.comment,
+                 text.constData(),
+                 sizeof(cmd.comment) - 1);
+
+    cmd.comment[sizeof(cmd.comment) - 1] = '\0';
+
+    m_socket->write(
+        reinterpret_cast<const char *>(&cmd),
+        sizeof(cmd));
+
+    m_socket->flush();
+}
+
+void TcpSender::sendDelete(int uniqueID)
+{
+    if (!ensureConnected())
+        return;
+
+    DeleteDataCmd cmd{};
+
+    cmd.cmdID = Protocol::CMD_DELETE;
+    cmd.UniqueID = static_cast<quint32>(uniqueID);
+
+    m_socket->write(
+        reinterpret_cast<const char *>(&cmd),
+        sizeof(cmd));
+
+    m_socket->flush();
+}

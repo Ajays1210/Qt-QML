@@ -1,0 +1,35 @@
+#ifndef SERVERRECEIVER_H
+#define SERVERRECEIVER_H
+
+#include <QObject>
+#include <QTcpServer>
+#include <QTcpSocket>
+#include <QHash>
+#include <QByteArray>
+
+class ServerReceiver : public QObject
+{
+    Q_OBJECT
+
+public:
+    explicit ServerReceiver(QObject *parent = nullptr);
+
+public slots:
+    void start();   // Start listening for TCP clients.
+    void stop();    // Stop the TCP server and disconnect clients.
+
+signals:
+    void commandReceived(const QByteArray &data); // Sends a complete command to ServerSender.
+
+private slots:
+    void onNewConnection(); // Handles newly connected TCP clients.
+    void onReadyRead();     // Reads and assembles incoming TCP data.
+    void onDisconnected();  // Cleans up a disconnected client.
+
+private:
+    QTcpServer *m_server;
+    // Stores incomplete data separately for every connected socket.
+    QHash<QTcpSocket *, QByteArray> m_buffers;
+};
+
+#endif

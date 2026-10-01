@@ -1,0 +1,71 @@
+#ifndef PROTOCOL_H
+#define PROTOCOL_H
+
+#include <QtGlobal>
+
+// Disable compiler padding because these structures are sent directly over the network.
+#pragma pack(push, 1)
+
+// TCP 4001 - Add / Update
+struct AddDataCmd
+{
+    unsigned char cmdID;   // Command type: ADD or UPDATE.
+    unsigned int UniqueID; // Record identifier.
+    float lat;
+    float longitude;
+    char comment[50];      // Fixed-size text field.
+};
+
+// TCP 4001 - Delete
+struct DeleteDataCmd
+{
+    unsigned char cmdID;   // Command type: DELETE.
+    unsigned int UniqueID;
+};
+
+// UDP 4002 - Add / Update response
+struct AddDataResp
+{
+    unsigned char respID;  // Response/command ID.
+    unsigned char Ack;     // 0x00 = Fail, 0xFF = Success.
+    unsigned int UniqueID;
+    float lat;
+    float longitude;
+    char comment[50];
+};
+
+// UDP 4002 - Delete response
+struct DeleteDataResp
+{
+    unsigned char respID;
+    unsigned char Ack;     // 0x00 = Fail, 0xFF = Success.
+    unsigned int UniqueID;
+};
+
+#pragma pack(pop)
+
+// These sizes are part of the network protocol.
+// Any change to the structures changes the packet format.
+static_assert(sizeof(AddDataCmd) == 63,
+              "AddDataCmd size must be 63");
+
+static_assert(sizeof(DeleteDataCmd) == 5,
+              "DeleteDataCmd size must be 5");
+
+static_assert(sizeof(AddDataResp) == 64,
+              "AddDataResp size must be 64");
+
+static_assert(sizeof(DeleteDataResp) == 6,
+              "DeleteDataResp size must be 6");
+
+namespace Protocol
+{
+    constexpr quint8 CMD_ADD    = 0x01;
+    constexpr quint8 CMD_UPDATE = 0x02;
+    constexpr quint8 CMD_DELETE = 0x03;
+
+    constexpr quint8 ACK_FAIL    = 0x00;
+    constexpr quint8 ACK_SUCCESS = 0xFF;
+}
+
+#endif

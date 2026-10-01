@@ -1,0 +1,35 @@
+#ifndef SERVERSENDER_H
+#define SERVERSENDER_H
+
+#include <QObject>
+#include <QUdpSocket>
+#include <QHash>
+
+class ServerSender : public QObject
+{
+    Q_OBJECT
+
+public:
+    explicit ServerSender(QObject *parent = nullptr);
+
+public slots:
+    void start(); // Called when the sender thread starts.
+    void stop();  // Closes the UDP socket.
+    void processCommand(const QByteArray &data); // Processes a complete TCP command.
+
+private:
+    void sendAddResponse(quint8 respID, quint8 ack,
+                          quint32 uniqueID, float lat,
+                          float longitude, const char *comment);
+
+    void sendDeleteResponse(quint8 respID, quint8 ack,
+                             quint32 uniqueID);
+
+private:
+    QUdpSocket *m_udpSocket;
+
+    // Server keeps current records so Update/Delete can be checked.
+    QHash<quint32, QByteArray> m_records;
+};
+
+#endif

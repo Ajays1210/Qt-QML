@@ -1,0 +1,71 @@
+#include <QCoreApplication>
+#include <QThread>
+#include <QDebug>
+
+#include "serverreceiver.h"
+#include "serversender.h"
+
+int main(int argc, char *argv[])
+{
+    QCoreApplication app(argc, argv);
+
+    QThread receiverThread;
+    QThread senderThread;
+
+    ServerReceiver receiver;
+    ServerSender sender;
+
+    // Move the TCP receiver and UDP sender to separate threads.
+    receiver.moveToThread(&receiverThread);
+    sender.moveToThread(&senderThread);
+
+    // Complete TCP commands are passed to the UDP sender thread.
+    QObject::connect(&receiver,
+                     &ServerReceiver::commandReceived,
+                     &sender,
+                     &ServerSender::processCommand,
+                     Qt::QueuedConnection);
+
+    // Start receiver when receiver thread starts.
+    QObject::connect(&receiverThread,
+                     &QThread::started,
+                     &receiver,
+                     &ServerReceiver::start);
+
+    // Start sender when sender thread starts.
+    QObject::connect(&senderThread,
+                     &QThread::started,
+                     &sender,
+                     &ServerSender::start);
+
+    // Graceful shutdown when the application is closing.
+    QObject::connect(&app,
+                     &QCoreApplication::aboutToQuit,
+                     [&]()
+    {
+        QMetaObject::invokeMethod(
+            &receiver,
+            "stop",
+            Qt::BlockingQueuedConnection);
+
+        QMetaObject::invokeMethod(
+            &sender,
+            "stop",
+            Qt::BlockingQueuedConnection);
+
+        receiverThread.quit();
+        senderThread.quit();
+
+        receiverThread.wait();
+        senderThread.wait();
+    });
+
+    receiverThread.start();
+    senderThread.start();
+
+    qDebug() << "Ajay Server started.";
+    qDebug() << "TCP port: 4001";
+    qDebug() << "UDP broadcast port: 4002";
+
+    return app.exec();
+}

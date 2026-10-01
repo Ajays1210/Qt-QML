@@ -1,0 +1,120 @@
+#include <QGuiApplication>
+#include <QQmlApplicationEngine>
+#include <QThread>
+#include <QQmlContext>
+
+#include "clientcontroller.h"
+#include "tcpsender.h"
+#include "udpreceiver.h"
+
+int main(int argc, char *argv[])
+{
+    QGuiApplication app(argc, argv);
+
+    ClientController controller;
+
+    // TCP sender and UDP receiver run in their own threads.
+    QThread tcpThread;
+    QThread udpThread;
+
+    TcpSender tcpSender;
+    UdpReceiver udpReceiver;
+
+    tcpSender.moveToThread(&tcpThread);
+    udpReceiver.moveToThread(&udpThread);
+
+    // Start network objects when their threads start.
+    QObject::connect(&tcpThread,
+                     &QThread::started,
+                     &tcpSender,
+                     &TcpSender::start);
+
+    QObject::connect(&udpThread,
+                     &QThread::started,
+                     &udpReceiver,
+                     &UdpReceiver::start);
+
+    // QML -> Controller -> TCP sender.
+    QObject::connect(&controller,
+                     &ClientController::sendAddRequest,
+                     &tcpSender,
+                     &TcpSender::sendAdd,
+                     Qt::QueuedConnection);
+
+    QObject::connect(&controller,
+                     &ClientController::sendUpdateRequest,
+                     &tcpSender,
+                     &TcpSender::sendUpdate,
+                     Qt::QueuedConnection);
+
+    QObject::connect(&controller,
+                     &ClientController::sendDeleteRequest,
+                     &tcpSender,
+                     &TcpSender::sendDelete,
+                     Qt::QueuedConnection);
+
+    // UDP responses -> Controller -> QML model.
+    QObject::connect(&udpReceiver,
+                     &UdpReceiver::addResponseReceived,
+                     &controller,
+                     &ClientController::onAddResponse,
+                     Qt::QueuedConnection);
+
+    QObject::connect(&udpReceiver,
+                     &UdpReceiver::deleteResponseReceived,
+                     &controller,
+                     &ClientController::onDeleteResponse,
+                     Qt::QueuedConnection);
+
+    // Gracefully stop network threads when the application closes.
+    QObject::connect(&app,
+                     &QGuiApplication::aboutToQuit,
+                     [&]()
+    {
+        QMetaObject::invokeMethod(
+            &tcpSender,
+            "stop",
+            Qt::BlockingQueuedConnection);
+
+        QMetaObject::invokeMethod(
+            &udpReceiver,
+            "stop",
+            Qt::BlockingQueuedConnection);
+
+        tcpThread.quit();
+        udpThread.quit();
+
+        tcpThread.wait();
+        udpThread.wait();
+    });
+
+    tcpThread.start();
+    udpThread.start();
+
+    // Make the C++ controller available to QML.
+    QQmlApplicationEngine engine;
+
+    engine.rootContext()->setContextProperty(
+        "clientController",
+        &controller);
+
+    const QUrl url(
+        QStringLiteral("qrc:/AjayClient/qml/Main.qml"));
+
+    QObject::connect(
+        &engine,
+        &QQmlApplicationEngine::objectCreationFailed,
+        &app,
+        []()
+        {
+            QCoreApplication::exit(-1);
+        },
+        Qt::QueuedConnection);
+
+    engine.load(url);
+
+    if (engine.rootObjects().isEmpty())
+        return -1;
+
+    return app.exec();
+}

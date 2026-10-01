@@ -1,0 +1,110 @@
+#include "udpreceiver.h"
+
+#include <QDebug>
+#include <cstring>
+
+#include "protocol.h"
+
+UdpReceiver::UdpReceiver(QObject *parent)
+    : QObject(parent),
+      m_socket(new QUdpSocket(this))
+{
+    // readyRead is emitted whenever one or more UDP datagrams arrive.
+    connect(m_socket,
+            &QUdpSocket::readyRead,
+            this,
+            &UdpReceiver::readPendingDatagrams);
+}
+
+void UdpReceiver::start()
+{
+    // Listen for UDP broadcast responses on port 4002.
+    bool ok = m_socket->bind(
+        QHostAddress::AnyIPv4,
+        4002,
+        QUdpSocket::ShareAddress |
+        QUdpSocket::ReuseAddressHint);
+
+    if (!ok)
+    {
+        qDebug() << "UDP bind failed:"
+                 << m_socket->errorString();
+        return;
+    }
+
+    qDebug() << "UDP receiver thread listening on 4002";
+}
+
+void UdpReceiver::stop()
+{
+    if (m_socket)
+        m_socket->close();
+}
+
+void UdpReceiver::readPendingDatagrams()
+{
+    // There may be more than one datagram waiting.
+    while (m_socket->hasPendingDatagrams())
+    {
+        QByteArray datagram;
+
+        datagram.resize(
+            static_cast<int>(m_socket->pendingDatagramSize()));
+
+        QHostAddress sender;
+        quint16 senderPort = 0;
+
+        m_socket->readDatagram(
+            datagram.data(),
+            datagram.size(),
+            &sender,
+            &senderPort);
+
+        if (datagram.isEmpty())
+            continue;
+
+        quint8 responseID =
+            static_cast<quint8>(datagram.at(0));
+
+        // ADD and UPDATE responses have the same structure.
+        if (responseID == Protocol::CMD_ADD ||
+            responseID == Protocol::CMD_UPDATE)
+        {
+            if (datagram.size() !=
+                static_cast<int>(sizeof(AddDataResp)))
+                continue;
+
+            AddDataResp response{};
+            std::memcpy(&response,
+                        datagram.constData(),
+                        sizeof(response));
+
+            QString comment =
+                QString::fromUtf8(response.comment);
+
+            emit addResponseReceived(
+                response.respID,
+                response.Ack,
+                response.UniqueID,
+                response.lat,
+                response.longitude,
+                comment);
+        }
+        else if (responseID == Protocol::CMD_DELETE)
+        {
+            if (datagram.size() !=
+                static_cast<int>(sizeof(DeleteDataResp)))
+                continue;
+
+            DeleteDataResp response{};
+            std::memcpy(&response,
+                        datagram.constData(),
+                        sizeof(response));
+
+            emit deleteResponseReceived(
+                response.respID,
+                response.Ack,
+                response.UniqueID);
+        }
+    }
+}

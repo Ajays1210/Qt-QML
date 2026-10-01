@@ -1,0 +1,67 @@
+#ifndef CLIENTCONTROLLER_H
+#define CLIENTCONTROLLER_H
+
+#include <QObject>
+#include <QVariantList>
+#include <QVariantMap>
+
+class ClientController : public QObject
+{
+    Q_OBJECT
+
+public:
+    explicit ClientController(QObject *parent = nullptr);
+
+    // Exposes the record list to QML.
+    Q_PROPERTY(QVariantList records
+               READ records
+               NOTIFY recordsChanged)
+
+    QVariantList records() const;
+
+    // Functions callable directly from QML.
+    Q_INVOKABLE void addRecord(int uniqueID, double lat,
+                               double longitude,
+                               const QString &comment);
+
+    Q_INVOKABLE void updateRecord(int uniqueID, double lat,
+                                  double longitude,
+                                  const QString &comment);
+
+    Q_INVOKABLE void deleteRecord(int uniqueID);
+
+signals:
+    void recordsChanged();
+
+    // These signals are connected to TcpSender in main.cpp.
+    void sendAddRequest(int uniqueID, double lat,
+                        double longitude,
+                        const QString &comment);
+
+    void sendUpdateRequest(int uniqueID, double lat,
+                           double longitude,
+                           const QString &comment);
+
+    void sendDeleteRequest(int uniqueID);
+
+public slots:
+    // Called when a UDP ADD/UPDATE response arrives.
+    void onAddResponse(quint8 respID, quint8 ack,
+                       quint32 uniqueID, float lat,
+                       float longitude,
+                       const QString &comment);
+
+    // Called when a UDP DELETE response arrives.
+    void onDeleteResponse(quint8 respID, quint8 ack,
+                          quint32 uniqueID);
+
+private:
+    // Updates an existing local record or appends a new one.
+    void addOrUpdateLocalRecord(quint32 uniqueID, float lat,
+                                float longitude,
+                                const QString &comment);
+
+    QVariantList m_records;
+};
+
+#endif

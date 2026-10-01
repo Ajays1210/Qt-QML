@@ -1,0 +1,121 @@
+#include "serverreceiver.h"
+#include <QDebug>
+
+ServerReceiver::ServerReceiver(QObject *parent)
+    : QObject(parent),
+      m_server(new QTcpServer(this))
+{
+    // When a TCP client connects, Qt calls onNewConnection().
+    connect(m_server, &QTcpServer::newConnection,
+            this, &ServerReceiver::onNewConnection);
+}
+
+void ServerReceiver::start()
+{
+    // Listen on all local interfaces at TCP port 4001.
+    if (!m_server->listen(QHostAddress::Any, 4001))
+    {
+        qDebug() << "TCP listen failed:" << m_server->errorString();
+        return;
+    }
+
+    qDebug() << "TCP receiver thread listening on 4001";
+}
+
+void ServerReceiver::stop()
+{
+    // Disconnect every currently connected client.
+    for (QTcpSocket *socket : m_buffers.keys())
+        socket->disconnectFromHost();
+
+    m_buffers.clear();
+
+    if (m_server->isListening())
+        m_server->close();
+}
+
+void ServerReceiver::onNewConnection()
+{
+    while (m_server->hasPendingConnections())
+    {
+        QTcpSocket *socket = m_server->nextPendingConnection();
+
+        // Keep a separate receive buffer for this client.
+        m_buffers[socket] = QByteArray();
+
+        connect(socket, &QTcpSocket::readyRead,
+                this, &ServerReceiver::onReadyRead);
+
+        connect(socket, &QTcpSocket::disconnected,
+                this, &ServerReceiver::onDisconnected);
+
+        qDebug() << "Client connected:"
+                 << socket->peerAddress().toString();
+    }
+}
+
+void ServerReceiver::onReadyRead()
+{
+    QTcpSocket *socket =
+        qobject_cast<QTcpSocket *>(sender());
+
+    if (!socket)
+        return;
+
+    QByteArray &buffer = m_buffers[socket];
+
+    // TCP is a stream, so one application packet may arrive in pieces.
+    buffer.append(socket->readAll());
+
+    // Extract complete packets from the buffer.
+    while (true)
+    {
+        if (buffer.isEmpty())
+            return;
+
+        quint8 cmdID =
+            static_cast<quint8>(buffer.at(0));
+
+        int packetSize = 0;
+
+        if (cmdID == Protocol::CMD_ADD ||
+            cmdID == Protocol::CMD_UPDATE)
+        {
+            packetSize = sizeof(AddDataCmd);
+        }
+        else if (cmdID == Protocol::CMD_DELETE)
+        {
+            packetSize = sizeof(DeleteDataCmd);
+        }
+        else
+        {
+            qDebug() << "Unknown command ID:" << cmdID;
+            buffer.clear();
+            return;
+        }
+
+        // Wait until the complete packet has arrived.
+        if (buffer.size() < packetSize)
+            return;
+
+        QByteArray packet = buffer.left(packetSize);
+        buffer.remove(0, packetSize);
+
+        // Pass the complete command to ServerSender.
+        emit commandReceived(packet);
+    }
+}
+
+void ServerReceiver::onDisconnected()
+{
+    QTcpSocket *socket =
+        qobject_cast<QTcpSocket *>(sender());
+
+    if (!socket)
+        return;
+
+    qDebug() << "Client disconnected.";
+
+    m_buffers.remove(socket);
+    socket->deleteLater();
+}

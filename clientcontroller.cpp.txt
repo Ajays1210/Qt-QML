@@ -1,0 +1,110 @@
+#include "clientcontroller.h"
+
+#include "protocol.h"
+
+ClientController::ClientController(QObject *parent)
+    : QObject(parent)
+{
+}
+
+QVariantList ClientController::records() const
+{
+    return m_records;
+}
+
+void ClientController::addRecord(int uniqueID, double lat,
+                                 double longitude,
+                                 const QString &comment)
+{
+    // QML calls this function; the request is then sent to TcpSender.
+    emit sendAddRequest(uniqueID, lat, longitude, comment);
+}
+
+void ClientController::updateRecord(int uniqueID, double lat,
+                                    double longitude,
+                                    const QString &comment)
+{
+    emit sendUpdateRequest(uniqueID, lat, longitude, comment);
+}
+
+void ClientController::deleteRecord(int uniqueID)
+{
+    emit sendDeleteRequest(uniqueID);
+}
+
+void ClientController::onAddResponse(quint8 respID, quint8 ack,
+                                     quint32 uniqueID, float lat,
+                                     float longitude,
+                                     const QString &comment)
+{
+    Q_UNUSED(respID);
+
+    // Update the QML model only after a successful server response.
+    if (ack == Protocol::ACK_SUCCESS)
+    {
+        addOrUpdateLocalRecord(uniqueID,
+                               lat,
+                               longitude,
+                               comment);
+    }
+}
+
+void ClientController::onDeleteResponse(quint8 respID, quint8 ack,
+                                        quint32 uniqueID)
+{
+    Q_UNUSED(respID);
+
+    if (ack != Protocol::ACK_SUCCESS)
+        return;
+
+    // Remove the deleted record from the local QML model.
+    for (int i = 0; i < m_records.size(); ++i)
+    {
+        QVariantMap item = m_records[i].toMap();
+
+        if (item.value("uniqueID").toUInt() == uniqueID)
+        {
+            m_records.removeAt(i);
+            emit recordsChanged();
+            return;
+        }
+    }
+}
+
+void ClientController::addOrUpdateLocalRecord(
+    quint32 uniqueID,
+    float lat,
+    float longitude,
+    const QString &comment)
+{
+    // If the record already exists, update its values.
+    for (int i = 0; i < m_records.size(); ++i)
+    {
+        QVariantMap item = m_records[i].toMap();
+
+        if (item.value("uniqueID").toUInt() == uniqueID)
+        {
+            item["uniqueID"] = uniqueID;
+            item["lat"] = lat;
+            item["longitude"] = longitude;
+            item["comment"] = comment;
+
+            m_records[i] = item;
+
+            emit recordsChanged();
+            return;
+        }
+    }
+
+    // Otherwise create a new record.
+    QVariantMap item;
+
+    item["uniqueID"] = uniqueID;
+    item["lat"] = lat;
+    item["longitude"] = longitude;
+    item["comment"] = comment;
+
+    m_records.append(item);
+
+    emit recordsChanged();
+}

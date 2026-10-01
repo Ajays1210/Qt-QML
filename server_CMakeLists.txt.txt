@@ -1,0 +1,25 @@
+# Source files used by the server executable.
+set(SERVER_SOURCES
+    main.cpp
+    serverreceiver.h
+    serverreceiver.cpp
+    serversender.h
+    serversender.cpp
+)
+
+# Create the AjayServer executable.
+add_executable(AjayServer ${SERVER_SOURCES})
+
+# Allow the server to include files from its own folder and ../common.
+target_include_directories(AjayServer PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/../common
+)
+
+# Link Qt Core and Network modules.
+find_package(Qt6 REQUIRED COMPONENTS Core Network)
+
+target_link_libraries(AjayServer PRIVATE
+    Qt6::Core
+    Qt6::Network
+)

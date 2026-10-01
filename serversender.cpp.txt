@@ -1,0 +1,161 @@
+#include "serversender.h"
+
+#include <QDebug>
+#include <cstring>
+
+#include "protocol.h"
+
+ServerSender::ServerSender(QObject *parent)
+    : QObject(parent),
+      m_udpSocket(new QUdpSocket(this))
+{
+}
+
+void ServerSender::start()
+{
+    qDebug() << "UDP sender thread ready.";
+}
+
+void ServerSender::stop()
+{
+    if (m_udpSocket)
+        m_udpSocket->close();
+}
+
+void ServerSender::processCommand(const QByteArray &data)
+{
+    if (data.isEmpty())
+        return;
+
+    quint8 cmdID =
+        static_cast<quint8>(data.at(0));
+
+    // ADD and UPDATE use the same packet structure.
+    if (cmdID == Protocol::CMD_ADD ||
+        cmdID == Protocol::CMD_UPDATE)
+    {
+        if (data.size() !=
+            static_cast<int>(sizeof(AddDataCmd)))
+            return;
+
+        AddDataCmd cmd{};
+        std::memcpy(&cmd, data.constData(), sizeof(cmd));
+
+        // Check whether this unique ID already exists.
+        bool exists = m_records.contains(cmd.UniqueID);
+        bool allowed = false;
+
+        if (cmdID == Protocol::CMD_ADD)
+            allowed = !exists;   // ADD only if record does not exist.
+        else
+            allowed = exists;    // UPDATE only if record exists.
+
+        if (allowed)
+        {
+            // Store/replace the complete packet for this record.
+            m_records.insert(cmd.UniqueID, data);
+
+            sendAddResponse(cmdID,
+                            Protocol::ACK_SUCCESS,
+                            cmd.UniqueID,
+                            cmd.lat,
+                            cmd.longitude,
+                            cmd.comment);
+
+            qDebug() << (cmdID == Protocol::CMD_ADD ? "ADD" : "UPDATE")
+                     << "success:" << cmd.UniqueID;
+        }
+        else
+        {
+            sendAddResponse(cmdID,
+                            Protocol::ACK_FAIL,
+                            cmd.UniqueID,
+                            cmd.lat,
+                            cmd.longitude,
+                            cmd.comment);
+
+            qDebug() << (cmdID == Protocol::CMD_ADD ? "ADD" : "UPDATE")
+                     << "failed:" << cmd.UniqueID;
+        }
+    }
+    else if (cmdID == Protocol::CMD_DELETE)
+    {
+        if (data.size() !=
+            static_cast<int>(sizeof(DeleteDataCmd)))
+            return;
+
+        DeleteDataCmd cmd{};
+        std::memcpy(&cmd, data.constData(), sizeof(cmd));
+
+        bool exists = m_records.contains(cmd.UniqueID);
+
+        if (exists)
+        {
+            m_records.remove(cmd.UniqueID);
+
+            sendDeleteResponse(Protocol::CMD_DELETE,
+                                Protocol::ACK_SUCCESS,
+                                cmd.UniqueID);
+
+            qDebug() << "DELETE success:" << cmd.UniqueID;
+        }
+        else
+        {
+            sendDeleteResponse(Protocol::CMD_DELETE,
+                                Protocol::ACK_FAIL,
+                                cmd.UniqueID);
+
+            qDebug() << "DELETE failed:" << cmd.UniqueID;
+        }
+    }
+}
+
+void ServerSender::sendAddResponse(quint8 respID, quint8 ack,
+                                   quint32 uniqueID, float lat,
+                                   float longitude,
+                                   const char *comment)
+{
+    AddDataResp response{};
+
+    response.respID = respID;
+    response.Ack = ack;
+    response.UniqueID = uniqueID;
+    response.lat = lat;
+    response.longitude = longitude;
+
+    // Copy the comment without overflowing the fixed-size field.
+    std::strncpy(response.comment,
+                 comment,
+                 sizeof(response.comment) - 1);
+
+    response.comment[sizeof(response.comment) - 1] = '\0';
+
+    // Convert the binary structure to bytes for UDP transmission.
+    QByteArray packet(
+        reinterpret_cast<const char *>(&response),
+        sizeof(response));
+
+    // Broadcast the response on UDP port 4002.
+    m_udpSocket->writeDatagram(packet,
+                               QHostAddress::Broadcast,
+                               4002);
+}
+
+void ServerSender::sendDeleteResponse(quint8 respID, quint8 ack,
+                                      quint32 uniqueID)
+{
+    DeleteDataResp response{};
+
+    response.respID = respID;
+    response.Ack = ack;
+    response.UniqueID = uniqueID;
+
+    QByteArray packet(
+        reinterpret_cast<const char *>(&response),
+        sizeof(response));
+
+    // Broadcast the delete response on UDP port 4002.
+    m_udpSocket->writeDatagram(packet,
+                               QHostAddress::Broadcast,
+                               4002);
+}
